@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 class DozatNestedNer(Model):
     """
     A Nested NER Model.
-    Registered as a `Model` with name "nested_ner".
+    Registered as a `Model` with name "dozat_nested_ner".
     # Parameters
     vocab : `Vocabulary`, required
         A Vocabulary, required in order to compute sizes for input/output projections.
@@ -64,7 +64,7 @@ class DozatNestedNer(Model):
         span_feedforward: FeedForward = None,
         dropout: float = 0.0,
         input_dropout: float = 0.0,
-        edge_prediction_threshold: float = 0.5,
+        span_prediction_threshold: float = 0.5,
         initializer: InitializerApplicator = InitializerApplicator(),
         **kwargs,
     ) -> None:
@@ -72,7 +72,7 @@ class DozatNestedNer(Model):
 
         self.text_field_embedder = text_field_embedder
         self.encoder = encoder
-        self.edge_prediction_threshold = edge_prediction_threshold
+        self.span_prediction_threshold = span_prediction_threshold
         encoder_dim = encoder.get_output_dim()
 
         self.head_span_feedforward = span_feedforward or FeedForward(
@@ -207,26 +207,28 @@ class DozatNestedNer(Model):
         span_probs = output_dict["span_probs"].cpu().detach().numpy()
         mask = output_dict["mask"]
         lengths = get_lengths_from_binary_sequence_mask(mask)
-        spans = []
-        span_tags = []
+        batch_spans = []
+        batch_span_tags = []
         for instance_span_probs, instance_span_tag_probs, length in zip(
             span_probs, span_tag_probs, lengths
         ):
 
-            span_matrix = instance_span_probs > self.edge_prediction_threshold
-            edges = []
-            edge_tags = []
+            span_matrix = instance_span_probs > self.span_prediction_threshold
+            spans = []
+            span_tags = []
             for i in range(length):
-                for j in range(length):
+                # Strict requirement for span starts to be before span ends,
+                # so j index starts from i, not 0.
+                for j in range(i, length):
                     if span_matrix[i, j] == 1:
-                        edges.append((i, j))
+                        spans.append((i, j))
                         tag = instance_span_tag_probs[i, j].argmax(-1)
-                        edge_tags.append(self.vocab.get_token_from_index(tag, "labels"))
-            spans.append(edges)
-            span_tags.append(edge_tags)
+                        span_tags.append(self.vocab.get_token_from_index(tag, "labels"))
+            batch_spans.append(spans)
+            batch_span_tags.append(span_tags)
 
-        output_dict["spans"] = spans
-        output_dict["span_tags"] = span_tags
+        output_dict["spans"] = batch_spans
+        output_dict["span_tags"] = batch_span_tags
         return output_dict
 
     def _construct_loss(
@@ -285,18 +287,19 @@ class DozatNestedNer(Model):
         span_scores: torch.Tensor, span_tag_logits: torch.Tensor, mask: torch.BoolTensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Decodes the head and head tag predictions by decoding the unlabeled spans
+        Decodes the span start and span end predictions by decoding the unlabeled spans
         independently for each word and then again, predicting the head tags of
         these greedily chosen spans independently.
         # Parameters
         span_scores : `torch.Tensor`, required.
-            A tensor of shape (batch_size, sequence_length, sequence_length) used to generate
-            a distribution over attachments of a given word to all other words.
+            A tensor of shape (batch_size, sequence_length, sequence_length) representing the
+            liklihood that (i, j) is a span.
         span_tag_logits : `torch.Tensor`, required.
             A tensor of shape (batch_size, sequence_length, sequence_length, num_tags) used to
             generate a distribution over tags for each span.
         mask : `torch.BoolTensor`, required.
             A mask of shape (batch_size, sequence_length).
+
         # Returns
         span_probs : `torch.Tensor`
             A tensor of shape (batch_size, sequence_length, sequence_length) representing the
@@ -305,11 +308,12 @@ class DozatNestedNer(Model):
             A tensor of shape (batch_size, sequence_length, sequence_length, sequence_length)
             representing the distribution over edge tags for a given edge.
         """
-        # Mask the diagonal, because we don't self edges.
-        inf_diagonal_mask = torch.diag(span_scores.new(mask.size(1)).fill_(-numpy.inf))
-        span_scores = span_scores + inf_diagonal_mask
+        # Mask the upper triangular part of the scores, because we can't have
+        # span starts which start after the span ends.
+        inf_upper_tri_mask = torch.triu(torch.ones_like(span_scores) * -numpy.inf)
+        span_scores = span_scores + inf_upper_tri_mask
         # shape (batch_size, sequence_length, sequence_length, num_tags)
-        span_tag_logits = span_tag_logits + inf_diagonal_mask.unsqueeze(0).unsqueeze(-1)
+        span_tag_logits = span_tag_logits + inf_upper_tri_mask.unsqueeze(0).unsqueeze(-1)
         # Mask padded tokens, because we only want to consider actual word -> word edges.
         minus_mask = ~mask.unsqueeze(2)
         span_scores.masked_fill_(minus_mask, -numpy.inf)
