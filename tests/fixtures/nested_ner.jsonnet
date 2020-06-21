@@ -11,14 +11,14 @@
             }
         }
     },
-    "train_data_path": "fixtures/data.iob2",
-    "validation_data_path": "fixtures/data.iob2",
+    "train_data_path": "tests/fixtures/data.iob2",
+    "validation_data_path": "tests/fixtures/data.iob2",
     "model": {
         // This name needs to match the name that you used to register your dataset reader, with
         // the call to `@DatasetReader.register()`.
         "type": "dozat_nested_ner",
         // These other parameters exactly match the constructor parameters of your model class.
-        "embedder": {
+        "text_field_embedder": {
             "token_embedders": {
                 "tokens": {
                     "type": "embedding",
@@ -26,9 +26,14 @@
                 }
             }
         },
+        "arc_representation_dim": 50,
+        "tag_representation_dim": 10,
+        "dropout": 0.3,
+        "input_dropout": 0.3,
+
         "encoder": {
-            "type": "bag_of_embeddings",
-            "embedding_dim": 10
+            "type": "pass_through",
+            "input_dim": 10
         }
     },
     "data_loader": {

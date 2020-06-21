@@ -17,7 +17,7 @@ from allennlp.nn import InitializerApplicator, Activation
 from allennlp.nn.util import min_value_of_dtype
 from allennlp.nn.util import get_text_field_mask
 from allennlp.nn.util import get_lengths_from_binary_sequence_mask
-from allennlp.training.metrics import F1Measure
+from allennlp.training.metrics import F1Measure, SpanBasedF1Measure
 
 logger = logging.getLogger(__name__)
 
@@ -45,15 +45,10 @@ class DozatNestedNer(Model):
     arc_feedforward : `FeedForward`, optional, (default = None).
         The feedforward network used to produce arc representations.
         By default, a 1 layer feedforward network with an elu activation is used.
-    pos_tag_embedding : `Embedding`, optional.
-        Used to embed the `pos_tags` `SequenceLabelField` we get as input to the model.
     dropout : `float`, optional, (default = 0.0)
         The variational dropout applied to the output of the encoder and MLP layers.
     input_dropout : `float`, optional, (default = 0.0)
         The dropout applied to the embedded text input.
-    edge_prediction_threshold : `int`, optional (default = 0.5)
-        The probability at which to consider a scored edge to be 'present'
-        in the decoded graph. Must be between 0 and 1.
     initializer : `InitializerApplicator`, optional (default=`InitializerApplicator()`)
         Used to initialize the model parameters.
     """
@@ -67,7 +62,6 @@ class DozatNestedNer(Model):
         arc_representation_dim: int,
         tag_feedforward: FeedForward = None,
         arc_feedforward: FeedForward = None,
-        pos_tag_embedding: Embedding = None,
         dropout: float = 0.0,
         input_dropout: float = 0.0,
         edge_prediction_threshold: float = 0.5,
@@ -79,12 +73,6 @@ class DozatNestedNer(Model):
         self.text_field_embedder = text_field_embedder
         self.encoder = encoder
         self.edge_prediction_threshold = edge_prediction_threshold
-        if not 0 < edge_prediction_threshold < 1:
-            raise ConfigurationError(
-                f"edge_prediction_threshold must be between "
-                f"0 and 1 (exclusive) but found {edge_prediction_threshold}."
-            )
-
         encoder_dim = encoder.get_output_dim()
 
         self.head_arc_feedforward = arc_feedforward or FeedForward(
@@ -106,13 +94,10 @@ class DozatNestedNer(Model):
             tag_representation_dim, tag_representation_dim, label_dim=num_labels
         )
 
-        self._pos_tag_embedding = pos_tag_embedding or None
         self._dropout = InputVariationalDropout(dropout)
         self._input_dropout = Dropout(input_dropout)
 
         representation_dim = text_field_embedder.get_output_dim()
-        if pos_tag_embedding is not None:
-            representation_dim += pos_tag_embedding.get_output_dim()
 
         check_dimensions_match(
             representation_dim,
@@ -142,33 +127,25 @@ class DozatNestedNer(Model):
     def forward(
         self,  # type: ignore
         tokens: TextFieldTensors,
-        pos_tags: torch.LongTensor = None,
         metadata: List[Dict[str, Any]] = None,
-        arc_tags: torch.LongTensor = None,
+        span_labels: torch.LongTensor = None,
     ) -> Dict[str, torch.Tensor]:
 
         """
         # Parameters
         tokens : TextFieldTensors, required
             The output of `TextField.as_array()`.
-        pos_tags : torch.LongTensor, optional (default = None)
-            The output of a `SequenceLabelField` containing POS tags.
         metadata : List[Dict[str, Any]], optional (default = None)
             A dictionary of metadata for each batch element which has keys:
                 tokens : `List[str]`, required.
                     The original string tokens in the sentence.
-        arc_tags : torch.LongTensor, optional (default = None)
+        span_labels : torch.LongTensor, optional (default = None)
             A torch tensor representing the sequence of integer indices denoting the parent of every
             word in the dependency parse. Has shape `(batch_size, sequence_length, sequence_length)`.
         # Returns
         An output dictionary.
         """
         embedded_text_input = self.text_field_embedder(tokens)
-        if pos_tags is not None and self._pos_tag_embedding is not None:
-            embedded_pos_tags = self._pos_tag_embedding(pos_tags)
-            embedded_text_input = torch.cat([embedded_text_input, embedded_pos_tags], -1)
-        elif self._pos_tag_embedding is not None:
-            raise ConfigurationError("Model uses a POS embedding, but no POS tags were passed.")
 
         mask = get_text_field_mask(tokens)
         embedded_text_input = self._input_dropout(embedded_text_input)
@@ -201,9 +178,9 @@ class DozatNestedNer(Model):
         if metadata:
             output_dict["tokens"] = [meta["tokens"] for meta in metadata]
 
-        if arc_tags is not None:
+        if span_labels is not None:
             arc_nll, tag_nll = self._construct_loss(
-                arc_scores=arc_scores, arc_tag_logits=arc_tag_logits, arc_tags=arc_tags, mask=mask
+                arc_scores=arc_scores, arc_tag_logits=arc_tag_logits, arc_tags=span_labels, mask=mask
             )
             output_dict["loss"] = arc_nll + tag_nll
             output_dict["arc_loss"] = arc_nll
@@ -211,7 +188,7 @@ class DozatNestedNer(Model):
 
             # Make the arc tags not have negative values anywhere
             # (by default, no edge is indicated with -1).
-            arc_indices = (arc_tags != -1).float()
+            arc_indices = (span_labels != -1).float()
             tag_mask = mask.unsqueeze(1) & mask.unsqueeze(2)
             one_minus_arc_probs = 1 - arc_probs
             # We stack scores here because the f1 measure expects a

@@ -1,4 +1,3 @@
-
 from nested_ner.genia_reader import GeniaNestedNerReader
 
 
@@ -11,11 +10,81 @@ class TestNestedNerReader:
         assert len(instances) == 2
 
         fields = instances[0].fields
-        expected_tokens = ["it", "is", "movies", "like", "these"]
-        assert [t.text for t in fields["text"].tokens][:5] == expected_tokens
-        assert fields["label"].label == "neg"
+        expected_tokens = [
+            "A",
+            "new",
+            "B",
+            "-",
+            "cell",
+            "-",
+            "specific",
+            "enhancer",
+            "element",
+            "has",
+            "been",
+            "identified",
+            "3",
+            "'",
+            "of",
+            "E4",
+            "and",
+            "the",
+            "octamerlike",
+            "motifs",
+            "in",
+            "the",
+            "human",
+            "immunoglobulin",
+            "heavy",
+            "-",
+            "chain",
+            "gene",
+            "enhancer",
+            ".",
+        ]
+        assert [t.text for t in fields["text"].tokens] == expected_tokens
 
         fields = instances[1].fields
-        expected_tokens = ["the", "music", "is", "well-chosen", "and"]
-        assert [t.text for t in fields["text"].tokens][:5] == expected_tokens
-        assert fields["label"].label == "pos"
+        expected_tokens = [
+            "Tandem",
+            "copies",
+            "of",
+            "this",
+            "67",
+            "-",
+            "bp",
+            "MnlI",
+            "-",
+            "AluI",
+            "fragment",
+            ",",
+            "when",
+            "fused",
+            "to",
+            "the",
+            "chloramphenicol",
+            "acetyltransferase",
+            "gene",
+            "driven",
+            "by",
+            "the",
+            "conalbumin",
+            "promoter",
+            ",",
+            "stimulated",
+            "transcription",
+            "in",
+            "B",
+            "cells",
+            "but",
+            "not",
+            "in",
+            "Jurkat",
+            "T",
+            "cells",
+            "or",
+            "HeLa",
+            "cells",
+            ".",
+        ]
+        assert [t.text for t in fields["text"].tokens] == expected_tokens
