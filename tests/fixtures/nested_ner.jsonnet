@@ -26,7 +26,7 @@
                 }
             }
         },
-        "arc_representation_dim": 50,
+        "span_representation_dim": 50,
         "tag_representation_dim": 10,
         "dropout": 0.3,
         "input_dropout": 0.3,

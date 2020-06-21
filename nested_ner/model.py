@@ -36,14 +36,14 @@ class DozatNestedNer(Model):
         The encoder (with its own internal stacking) that we will use to generate representations
         of tokens.
     tag_representation_dim : `int`, required.
-        The dimension of the MLPs used for arc tag prediction.
-    arc_representation_dim : `int`, required.
-        The dimension of the MLPs used for arc prediction.
+        The dimension of the MLPs used for span tag prediction.
+    span_representation_dim : `int`, required.
+        The dimension of the MLPs used for span prediction.
     tag_feedforward : `FeedForward`, optional, (default = None).
         The feedforward network used to produce tag representations.
         By default, a 1 layer feedforward network with an elu activation is used.
-    arc_feedforward : `FeedForward`, optional, (default = None).
-        The feedforward network used to produce arc representations.
+    span_feedforward : `FeedForward`, optional, (default = None).
+        The feedforward network used to produce span representations.
         By default, a 1 layer feedforward network with an elu activation is used.
     dropout : `float`, optional, (default = 0.0)
         The variational dropout applied to the output of the encoder and MLP layers.
@@ -59,9 +59,9 @@ class DozatNestedNer(Model):
         text_field_embedder: TextFieldEmbedder,
         encoder: Seq2SeqEncoder,
         tag_representation_dim: int,
-        arc_representation_dim: int,
+        span_representation_dim: int,
         tag_feedforward: FeedForward = None,
-        arc_feedforward: FeedForward = None,
+        span_feedforward: FeedForward = None,
         dropout: float = 0.0,
         input_dropout: float = 0.0,
         edge_prediction_threshold: float = 0.5,
@@ -75,13 +75,13 @@ class DozatNestedNer(Model):
         self.edge_prediction_threshold = edge_prediction_threshold
         encoder_dim = encoder.get_output_dim()
 
-        self.head_arc_feedforward = arc_feedforward or FeedForward(
-            encoder_dim, 1, arc_representation_dim, Activation.by_name("elu")()
+        self.head_span_feedforward = span_feedforward or FeedForward(
+            encoder_dim, 1, span_representation_dim, Activation.by_name("elu")()
         )
-        self.child_arc_feedforward = copy.deepcopy(self.head_arc_feedforward)
+        self.child_span_feedforward = copy.deepcopy(self.head_span_feedforward)
 
-        self.arc_attention = BilinearMatrixAttention(
-            arc_representation_dim, arc_representation_dim, use_input_biases=True
+        self.span_attention = BilinearMatrixAttention(
+            span_representation_dim, span_representation_dim, use_input_biases=True
         )
 
         num_labels = self.vocab.get_vocab_size("labels")
@@ -112,14 +112,14 @@ class DozatNestedNer(Model):
             "tag feedforward output dim",
         )
         check_dimensions_match(
-            arc_representation_dim,
-            self.head_arc_feedforward.get_output_dim(),
-            "arc representation dim",
-            "arc feedforward output dim",
+            span_representation_dim,
+            self.head_span_feedforward.get_output_dim(),
+            "span representation dim",
+            "span feedforward output dim",
         )
 
         self._unlabelled_f1 = F1Measure(positive_label=1)
-        self._arc_loss = torch.nn.BCEWithLogitsLoss(reduction="none")
+        self._span_loss = torch.nn.BCEWithLogitsLoss(reduction="none")
         self._tag_loss = torch.nn.CrossEntropyLoss(reduction="none")
         initializer(self)
 
@@ -153,48 +153,48 @@ class DozatNestedNer(Model):
 
         encoded_text = self._dropout(encoded_text)
 
-        # shape (batch_size, sequence_length, arc_representation_dim)
-        head_arc_representation = self._dropout(self.head_arc_feedforward(encoded_text))
-        child_arc_representation = self._dropout(self.child_arc_feedforward(encoded_text))
+        # shape (batch_size, sequence_length, span_representation_dim)
+        head_span_representation = self._dropout(self.head_span_feedforward(encoded_text))
+        child_span_representation = self._dropout(self.child_span_feedforward(encoded_text))
 
         # shape (batch_size, sequence_length, tag_representation_dim)
         head_tag_representation = self._dropout(self.head_tag_feedforward(encoded_text))
         child_tag_representation = self._dropout(self.child_tag_feedforward(encoded_text))
         # shape (batch_size, sequence_length, sequence_length)
-        arc_scores = self.arc_attention(head_arc_representation, child_arc_representation)
+        span_scores = self.span_attention(head_span_representation, child_span_representation)
         # shape (batch_size, num_tags, sequence_length, sequence_length)
-        arc_tag_logits = self.tag_bilinear(head_tag_representation, child_tag_representation)
+        span_tag_logits = self.tag_bilinear(head_tag_representation, child_tag_representation)
         # Switch to (batch_size, sequence_length, sequence_length, num_tags)
-        arc_tag_logits = arc_tag_logits.permute(0, 2, 3, 1).contiguous()
+        span_tag_logits = span_tag_logits.permute(0, 2, 3, 1).contiguous()
 
         # Since we'll be doing some additions, using the min value will cause underflow
-        minus_mask = ~mask * min_value_of_dtype(arc_scores.dtype) / 10
-        arc_scores = arc_scores + minus_mask.unsqueeze(2) + minus_mask.unsqueeze(1)
+        minus_mask = ~mask * min_value_of_dtype(span_scores.dtype) / 10
+        span_scores = span_scores + minus_mask.unsqueeze(2) + minus_mask.unsqueeze(1)
 
-        arc_probs, arc_tag_probs = self._greedy_decode(arc_scores, arc_tag_logits, mask)
+        span_probs, span_tag_probs = self._greedy_decode(span_scores, span_tag_logits, mask)
 
-        output_dict = {"arc_probs": arc_probs, "arc_tag_probs": arc_tag_probs, "mask": mask}
+        output_dict = {"span_probs": span_probs, "span_tag_probs": span_tag_probs, "mask": mask}
 
         if metadata:
             output_dict["tokens"] = [meta["tokens"] for meta in metadata]
 
         if span_labels is not None:
-            arc_nll, tag_nll = self._construct_loss(
-                arc_scores=arc_scores, arc_tag_logits=arc_tag_logits, arc_tags=span_labels, mask=mask
+            span_nll, tag_nll = self._construct_loss(
+                span_scores=span_scores, span_tag_logits=span_tag_logits, span_tags=span_labels, mask=mask
             )
-            output_dict["loss"] = arc_nll + tag_nll
-            output_dict["arc_loss"] = arc_nll
+            output_dict["loss"] = span_nll + tag_nll
+            output_dict["span_loss"] = span_nll
             output_dict["tag_loss"] = tag_nll
 
-            # Make the arc tags not have negative values anywhere
+            # Make the span tags not have negative values anywhere
             # (by default, no edge is indicated with -1).
-            arc_indices = (span_labels != -1).float()
+            span_indices = (span_labels != -1).float()
             tag_mask = mask.unsqueeze(1) & mask.unsqueeze(2)
-            one_minus_arc_probs = 1 - arc_probs
+            one_minus_span_probs = 1 - span_probs
             # We stack scores here because the f1 measure expects a
             # distribution, rather than a single value.
             self._unlabelled_f1(
-                torch.stack([one_minus_arc_probs, arc_probs], -1), arc_indices, tag_mask
+                torch.stack([one_minus_span_probs, span_probs], -1), span_indices, tag_mask
             )
 
         return output_dict
@@ -203,122 +203,122 @@ class DozatNestedNer(Model):
     def make_output_human_readable(
         self, output_dict: Dict[str, torch.Tensor]
     ) -> Dict[str, torch.Tensor]:
-        arc_tag_probs = output_dict["arc_tag_probs"].cpu().detach().numpy()
-        arc_probs = output_dict["arc_probs"].cpu().detach().numpy()
+        span_tag_probs = output_dict["span_tag_probs"].cpu().detach().numpy()
+        span_probs = output_dict["span_probs"].cpu().detach().numpy()
         mask = output_dict["mask"]
         lengths = get_lengths_from_binary_sequence_mask(mask)
-        arcs = []
-        arc_tags = []
-        for instance_arc_probs, instance_arc_tag_probs, length in zip(
-            arc_probs, arc_tag_probs, lengths
+        spans = []
+        span_tags = []
+        for instance_span_probs, instance_span_tag_probs, length in zip(
+            span_probs, span_tag_probs, lengths
         ):
 
-            arc_matrix = instance_arc_probs > self.edge_prediction_threshold
+            span_matrix = instance_span_probs > self.edge_prediction_threshold
             edges = []
             edge_tags = []
             for i in range(length):
                 for j in range(length):
-                    if arc_matrix[i, j] == 1:
+                    if span_matrix[i, j] == 1:
                         edges.append((i, j))
-                        tag = instance_arc_tag_probs[i, j].argmax(-1)
+                        tag = instance_span_tag_probs[i, j].argmax(-1)
                         edge_tags.append(self.vocab.get_token_from_index(tag, "labels"))
-            arcs.append(edges)
-            arc_tags.append(edge_tags)
+            spans.append(edges)
+            span_tags.append(edge_tags)
 
-        output_dict["arcs"] = arcs
-        output_dict["arc_tags"] = arc_tags
+        output_dict["spans"] = spans
+        output_dict["span_tags"] = span_tags
         return output_dict
 
     def _construct_loss(
         self,
-        arc_scores: torch.Tensor,
-        arc_tag_logits: torch.Tensor,
-        arc_tags: torch.Tensor,
+        span_scores: torch.Tensor,
+        span_tag_logits: torch.Tensor,
+        span_tags: torch.Tensor,
         mask: torch.BoolTensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Computes the arc and tag loss for an adjacency matrix.
+        Computes the span and tag loss for an adjacency matrix.
         # Parameters
-        arc_scores : `torch.Tensor`, required.
+        span_scores : `torch.Tensor`, required.
             A tensor of shape (batch_size, sequence_length, sequence_length) used to generate a
             binary classification decision for whether an edge is present between two words.
-        arc_tag_logits : `torch.Tensor`, required.
+        span_tag_logits : `torch.Tensor`, required.
             A tensor of shape (batch_size, sequence_length, sequence_length, num_tags) used to generate
             a distribution over edge tags for a given edge.
-        arc_tags : `torch.Tensor`, required.
+        span_tags : `torch.Tensor`, required.
             A tensor of shape (batch_size, sequence_length, sequence_length).
-            The labels for every arc.
+            The labels for every span.
         mask : `torch.BoolTensor`, required.
             A mask of shape (batch_size, sequence_length), denoting unpadded
             elements in the sequence.
         # Returns
-        arc_nll : `torch.Tensor`, required.
-            The negative log likelihood from the arc loss.
+        span_nll : `torch.Tensor`, required.
+            The negative log likelihood from the span loss.
         tag_nll : `torch.Tensor`, required.
-            The negative log likelihood from the arc tag loss.
+            The negative log likelihood from the span tag loss.
         """
-        arc_indices = (arc_tags != -1).float()
-        # Make the arc tags not have negative values anywhere
+        span_indices = (span_tags != -1).float()
+        # Make the span tags not have negative values anywhere
         # (by default, no edge is indicated with -1).
-        arc_tags = arc_tags * arc_indices
-        arc_nll = self._arc_loss(arc_scores, arc_indices) * mask.unsqueeze(1) * mask.unsqueeze(2)
+        span_tags = span_tags * span_indices
+        span_nll = self._span_loss(span_scores, span_indices) * mask.unsqueeze(1) * mask.unsqueeze(2)
         # We want the mask for the tags to only include the unmasked words
-        # and we only care about the loss with respect to the gold arcs.
-        tag_mask = mask.unsqueeze(1) * mask.unsqueeze(2) * arc_indices
+        # and we only care about the loss with respect to the gold spans.
+        tag_mask = mask.unsqueeze(1) * mask.unsqueeze(2) * span_indices
 
-        batch_size, sequence_length, _, num_tags = arc_tag_logits.size()
+        batch_size, sequence_length, _, num_tags = span_tag_logits.size()
         original_shape = [batch_size, sequence_length, sequence_length]
-        reshaped_logits = arc_tag_logits.view(-1, num_tags)
-        reshaped_tags = arc_tags.view(-1)
+        reshaped_logits = span_tag_logits.view(-1, num_tags)
+        reshaped_tags = span_tags.view(-1)
         tag_nll = (
             self._tag_loss(reshaped_logits, reshaped_tags.long()).view(original_shape) * tag_mask
         )
 
         valid_positions = tag_mask.sum()
 
-        arc_nll = arc_nll.sum() / valid_positions.float()
+        span_nll = span_nll.sum() / valid_positions.float()
         tag_nll = tag_nll.sum() / valid_positions.float()
-        return arc_nll, tag_nll
+        return span_nll, tag_nll
 
     @staticmethod
     def _greedy_decode(
-        arc_scores: torch.Tensor, arc_tag_logits: torch.Tensor, mask: torch.BoolTensor
+        span_scores: torch.Tensor, span_tag_logits: torch.Tensor, mask: torch.BoolTensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Decodes the head and head tag predictions by decoding the unlabeled arcs
+        Decodes the head and head tag predictions by decoding the unlabeled spans
         independently for each word and then again, predicting the head tags of
-        these greedily chosen arcs independently.
+        these greedily chosen spans independently.
         # Parameters
-        arc_scores : `torch.Tensor`, required.
+        span_scores : `torch.Tensor`, required.
             A tensor of shape (batch_size, sequence_length, sequence_length) used to generate
             a distribution over attachments of a given word to all other words.
-        arc_tag_logits : `torch.Tensor`, required.
+        span_tag_logits : `torch.Tensor`, required.
             A tensor of shape (batch_size, sequence_length, sequence_length, num_tags) used to
-            generate a distribution over tags for each arc.
+            generate a distribution over tags for each span.
         mask : `torch.BoolTensor`, required.
             A mask of shape (batch_size, sequence_length).
         # Returns
-        arc_probs : `torch.Tensor`
+        span_probs : `torch.Tensor`
             A tensor of shape (batch_size, sequence_length, sequence_length) representing the
-            probability of an arc being present for this edge.
-        arc_tag_probs : `torch.Tensor`
+            probability of an span being present for this edge.
+        span_tag_probs : `torch.Tensor`
             A tensor of shape (batch_size, sequence_length, sequence_length, sequence_length)
             representing the distribution over edge tags for a given edge.
         """
         # Mask the diagonal, because we don't self edges.
-        inf_diagonal_mask = torch.diag(arc_scores.new(mask.size(1)).fill_(-numpy.inf))
-        arc_scores = arc_scores + inf_diagonal_mask
+        inf_diagonal_mask = torch.diag(span_scores.new(mask.size(1)).fill_(-numpy.inf))
+        span_scores = span_scores + inf_diagonal_mask
         # shape (batch_size, sequence_length, sequence_length, num_tags)
-        arc_tag_logits = arc_tag_logits + inf_diagonal_mask.unsqueeze(0).unsqueeze(-1)
+        span_tag_logits = span_tag_logits + inf_diagonal_mask.unsqueeze(0).unsqueeze(-1)
         # Mask padded tokens, because we only want to consider actual word -> word edges.
         minus_mask = ~mask.unsqueeze(2)
-        arc_scores.masked_fill_(minus_mask, -numpy.inf)
-        arc_tag_logits.masked_fill_(minus_mask.unsqueeze(-1), -numpy.inf)
+        span_scores.masked_fill_(minus_mask, -numpy.inf)
+        span_tag_logits.masked_fill_(minus_mask.unsqueeze(-1), -numpy.inf)
         # shape (batch_size, sequence_length, sequence_length)
-        arc_probs = arc_scores.sigmoid()
+        span_probs = span_scores.sigmoid()
         # shape (batch_size, sequence_length, sequence_length, num_tags)
-        arc_tag_probs = torch.nn.functional.softmax(arc_tag_logits, dim=-1)
-        return arc_probs, arc_tag_probs
+        span_tag_probs = torch.nn.functional.softmax(span_tag_logits, dim=-1)
+        return span_probs, span_tag_probs
 
     @overrides
     def get_metrics(self, reset: bool = False) -> Dict[str, float]:

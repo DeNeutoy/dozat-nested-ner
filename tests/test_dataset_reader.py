@@ -42,7 +42,7 @@ class TestNestedNerReader:
             "enhancer",
             ".",
         ]
-        assert [t.text for t in fields["text"].tokens] == expected_tokens
+        assert [t.text for t in fields["tokens"].tokens] == expected_tokens
 
         fields = instances[1].fields
         expected_tokens = [
@@ -87,4 +87,4 @@ class TestNestedNerReader:
             "cells",
             ".",
         ]
-        assert [t.text for t in fields["text"].tokens] == expected_tokens
+        assert [t.text for t in fields["tokens"].tokens] == expected_tokens
