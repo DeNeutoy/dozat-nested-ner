@@ -12,8 +12,8 @@ class PerClassScorer:
 
     def __call__(
         self,
-        predicted_spans: List[Tuple[int, int, str]],
-        gold_spans: List[Tuple[int, int, str]],
+        predicted_spans: List[TypedStringSpan],
+        gold_spans: List[TypedStringSpan],
     ) -> None:
 
         gold_spans = copy.copy(gold_spans)

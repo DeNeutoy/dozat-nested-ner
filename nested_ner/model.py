@@ -17,6 +17,7 @@ from allennlp.nn import InitializerApplicator, Activation
 from allennlp.nn.util import min_value_of_dtype
 from allennlp.nn.util import get_text_field_mask
 from allennlp.nn.util import get_lengths_from_binary_sequence_mask
+from allennlp.data.dataset_readers.dataset_utils.span_utils import TypedStringSpan
 
 from nested_ner.per_class_f1 import PerClassScorer
 
@@ -121,6 +122,8 @@ class DozatNestedNer(Model):
 
         self._span_loss = torch.nn.BCEWithLogitsLoss(reduction="none")
         self._tag_loss = torch.nn.CrossEntropyLoss(reduction="none")
+
+        self._scorer = PerClassScorer()
         initializer(self)
 
     @overrides
@@ -186,18 +189,39 @@ class DozatNestedNer(Model):
             output_dict["span_loss"] = span_nll
             output_dict["tag_loss"] = tag_nll
 
-            # Make the span tags not have negative values anywhere
-            # (by default, no edge is indicated with -1).
-            span_indices = (span_labels != -1).float()
-            tag_mask = mask.unsqueeze(1) & mask.unsqueeze(2)
-            one_minus_span_probs = 1 - span_probs
-            # We stack scores here because the f1 measure expects a
-            # distribution, rather than a single value.
-            self._unlabelled_f1(
-                torch.stack([one_minus_span_probs, span_probs], -1), span_indices, tag_mask
-            )
-
+            if not self.training:
+                batch_predicted = self.span_inference(span_probs, span_tag_probs, mask)
+                # Flatten lists of spans
+                for predicted, meta in zip(batch_predicted, metadata):
+                    self._scorer(predicted, meta["gold"])
         return output_dict
+
+
+    def span_inference(
+        self,
+        span_probs: torch.Tensor,
+        span_tag_probs: torch.Tensor,
+        mask: torch.Tensor
+        ) -> List[List[TypedStringSpan]]:
+
+        lengths = get_lengths_from_binary_sequence_mask(mask)
+        batch_spans = []
+        for instance_span_probs, instance_span_tag_probs, length in zip(
+            span_probs, span_tag_probs, lengths
+        ):
+            span_matrix = instance_span_probs > self.span_prediction_threshold
+            spans = []
+            for i in range(length):
+                # Strict requirement for span starts to be before span ends,
+                # so j index starts from i, not 0.
+                for j in range(i, length):
+                    if span_matrix[i, j] == 1:
+                        tag = instance_span_tag_probs[i, j].argmax(-1)
+                        string_tag = self.vocab.get_token_from_index(tag, "labels")
+                        spans.append((string_tag, (i, j)))
+            batch_spans.append(spans)
+
+        return batch_spans
 
     @overrides
     def make_output_human_readable(
@@ -207,28 +231,7 @@ class DozatNestedNer(Model):
         span_probs = output_dict["span_probs"].cpu().detach().numpy()
         mask = output_dict["mask"]
         lengths = get_lengths_from_binary_sequence_mask(mask)
-        batch_spans = []
-        batch_span_tags = []
-        for instance_span_probs, instance_span_tag_probs, length in zip(
-            span_probs, span_tag_probs, lengths
-        ):
-
-            span_matrix = instance_span_probs > self.span_prediction_threshold
-            spans = []
-            span_tags = []
-            for i in range(length):
-                # Strict requirement for span starts to be before span ends,
-                # so j index starts from i, not 0.
-                for j in range(i, length):
-                    if span_matrix[i, j] == 1:
-                        spans.append((i, j))
-                        tag = instance_span_tag_probs[i, j].argmax(-1)
-                        span_tags.append(self.vocab.get_token_from_index(tag, "labels"))
-            batch_spans.append(spans)
-            batch_span_tags.append(span_tags)
-
-        output_dict["spans"] = batch_spans
-        output_dict["span_tags"] = batch_span_tags
+        output_dict["spans"] = self.span_inference(span_probs, span_tag_probs, mask)
         return output_dict
 
     def _construct_loss(
@@ -326,5 +329,4 @@ class DozatNestedNer(Model):
 
     @overrides
     def get_metrics(self, reset: bool = False) -> Dict[str, float]:
-        metrics = {}
-        return metrics
+        return self._scorer.get_metric(reset=reset)
