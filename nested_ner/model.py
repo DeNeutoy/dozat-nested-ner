@@ -17,7 +17,8 @@ from allennlp.nn import InitializerApplicator, Activation
 from allennlp.nn.util import min_value_of_dtype
 from allennlp.nn.util import get_text_field_mask
 from allennlp.nn.util import get_lengths_from_binary_sequence_mask
-from allennlp.training.metrics import F1Measure, SpanBasedF1Measure
+
+from nested_ner.per_class_f1 import PerClassScorer
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +119,6 @@ class DozatNestedNer(Model):
             "span feedforward output dim",
         )
 
-        self._unlabelled_f1 = F1Measure(positive_label=1)
         self._span_loss = torch.nn.BCEWithLogitsLoss(reduction="none")
         self._tag_loss = torch.nn.CrossEntropyLoss(reduction="none")
         initializer(self)
@@ -327,8 +327,4 @@ class DozatNestedNer(Model):
     @overrides
     def get_metrics(self, reset: bool = False) -> Dict[str, float]:
         metrics = {}
-        precision, recall, f1_measure = self._unlabelled_f1.get_metric(reset)
-        metrics["precision"] = precision
-        metrics["recall"] = recall
-        metrics["f1"] = f1_measure
         return metrics

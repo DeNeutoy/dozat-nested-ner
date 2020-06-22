@@ -1,7 +1,7 @@
 from typing import Dict, Iterable, List
 
 from allennlp.data import DatasetReader, Instance
-from allennlp.data.fields import LabelField, TextField, AdjacencyField
+from allennlp.data.fields import TextField, AdjacencyField, MetadataField
 from allennlp.data.token_indexers import TokenIndexer, SingleIdTokenIndexer
 from allennlp.data.tokenizers import Tokenizer, WhitespaceTokenizer
 from allennlp.data.dataset_readers.dataset_utils.span_utils import bio_tags_to_spans, TypedStringSpan
@@ -74,6 +74,8 @@ class GeniaNestedNerReader(DatasetReader):
 
             labels, spans = zip(*labeled_spans)
             adjacency = AdjacencyField(spans, text_field, labels)
+            meta = MetadataField(labeled_spans)
             fields["span_labels"] = adjacency
+            fields["metadata"] = meta
 
         return Instance(fields)
