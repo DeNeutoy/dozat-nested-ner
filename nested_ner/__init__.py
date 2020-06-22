@@ -6,3 +6,4 @@
 # the same way in the .allennlp_plugins file.
 from nested_ner.model import DozatNestedNer
 from nested_ner.genia_reader import GeniaNestedNerReader
+from nested_ner.genia_v3_reader import GeniaV3NestedNerReader
