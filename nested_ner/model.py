@@ -190,7 +190,7 @@ class DozatNestedNer(Model):
             output_dict["tag_loss"] = tag_nll
 
             if not self.training:
-                batch_predicted = self.span_inference(span_probs, span_tag_probs, mask)
+                batch_predicted = self.span_inference(span_probs.cpu().detach().numpy(), span_tag_probs.cpu().detach().numpy(), mask)
                 # Flatten lists of spans
                 for predicted, meta in zip(batch_predicted, metadata):
                     self._scorer(predicted, meta["gold"])
@@ -220,7 +220,6 @@ class DozatNestedNer(Model):
                         string_tag = self.vocab.get_token_from_index(tag, "labels")
                         spans.append((string_tag, (i, j)))
             batch_spans.append(spans)
-
         return batch_spans
 
     @overrides
@@ -311,12 +310,13 @@ class DozatNestedNer(Model):
             A tensor of shape (batch_size, sequence_length, sequence_length, sequence_length)
             representing the distribution over edge tags for a given edge.
         """
-        # Mask the upper triangular part of the scores, because we can't have
+        # Mask the lower triangular part of the scores, because we can't have
         # span starts which start after the span ends.
-        inf_upper_tri_mask = torch.triu(torch.ones_like(span_scores) * -numpy.inf)
-        span_scores = span_scores + inf_upper_tri_mask
+        seq_length = span_scores.shape[-1]
+        inf_lower_tri_mask = torch.triu(span_scores.new_ones(seq_length, seq_length)).log()
+        span_scores = span_scores + inf_lower_tri_mask
         # shape (batch_size, sequence_length, sequence_length, num_tags)
-        span_tag_logits = span_tag_logits + inf_upper_tri_mask.unsqueeze(0).unsqueeze(-1)
+        span_tag_logits = span_tag_logits + inf_lower_tri_mask.unsqueeze(0).unsqueeze(-1)
         # Mask padded tokens, because we only want to consider actual word -> word edges.
         minus_mask = ~mask.unsqueeze(2)
         span_scores.masked_fill_(minus_mask, -numpy.inf)
