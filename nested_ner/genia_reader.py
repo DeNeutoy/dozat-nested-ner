@@ -52,7 +52,6 @@ class GeniaNestedNerReader(DatasetReader):
 
         # Check if we have one left over
         if words:
-            print(words)
             spans = []
             spans.extend(bio_tags_to_spans(bio1))
             spans.extend(bio_tags_to_spans(bio2))

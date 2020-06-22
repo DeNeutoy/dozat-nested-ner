@@ -11,25 +11,47 @@
             }
         }
     },
-    "train_data_path": "fixtures/data.iob2",
-    "validation_data_path": "fixtures/data.iob2",
+    "train_data_path": "/net/nfs.corp/s2-research/markn/data/genia/genia.train.iob2",
+    "validation_data_path": "/net/nfs.corp/s2-research/markn/data/genia/genia.dev.iob2",
     "model": {
         // This name needs to match the name that you used to register your dataset reader, with
         // the call to `@DatasetReader.register()`.
         "type": "dozat_nested_ner",
         // These other parameters exactly match the constructor parameters of your model class.
-        "embedder": {
+        "text_field_embedder": {
             "token_embedders": {
                 "tokens": {
                     "type": "embedding",
-                    "embedding_dim": 10
+                    "embedding_dim": 200,
+                    "pretrained_file": "https://allennlp.s3.amazonaws.com/datasets/glove/glove.6B.100d.txt.gz",
+                    "trainable": true
                 }
             }
         },
-        "encoder": {
-            "type": "bag_of_embeddings",
-            "embedding_dim": 10
-        }
+      "encoder": {
+        "type": "stacked_bidirectional_lstm",
+        "input_size": 100,
+        "hidden_size": 400,
+        "num_layers": 3,
+        "recurrent_dropout_probability": 0.3,
+        "use_highway": true
+      },
+      "span_representation_dim": 500,
+      "tag_representation_dim": 100,
+      "dropout": 0.3,
+      "input_dropout": 0.3,
+      "initializer": {
+        "regexes": [
+          [".*feedforward.*weight", {"type": "xavier_uniform"}],
+          [".*feedforward.*bias", {"type": "zero"}],
+          [".*tag_bilinear.*weight", {"type": "xavier_uniform"}],
+          [".*tag_bilinear.*bias", {"type": "zero"}],
+          [".*weight_ih.*", {"type": "xavier_uniform"}],
+          [".*weight_hh.*", {"type": "orthogonal"}],
+          [".*bias_ih.*", {"type": "zero"}],
+          [".*bias_hh.*", {"type": "lstm_hidden_bias"}]
+        ]
+      }
     },
     "data_loader": {
         // See http://docs.allennlp.org/master/api/data/dataloader/ for more info on acceptable
@@ -38,10 +60,16 @@
         "shuffle": true
     },
     "trainer": {
-        // See http://docs.allennlp.org/master/api/training/trainer/#gradientdescenttrainer-objects
-        // for more info on acceptable parameters here.
-        "optimizer": "adam",
-        "num_epochs": 5
+      "num_epochs": 30,
+      "grad_norm": 5.0,
+      "patience": 20,
+      "cuda_device": 0,
+      "validation_metric": "+f1-measure-overall",
+      "optimizer": {
+        "type": "huggingface_adamw",
+        "lr": 2e-5,
+        "eps": 1e-8
+      }
     }
     // There are a few other optional parameters that can go at the top level, e.g., to configure
     // vocabulary behavior, to use a separate dataset reader for validation data, or other things.
