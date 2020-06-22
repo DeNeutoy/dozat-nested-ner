@@ -22,7 +22,7 @@
             "token_embedders": {
                 "tokens": {
                     "type": "embedding",
-                    "embedding_dim": 200,
+                    "embedding_dim": 100,
                     "pretrained_file": "https://allennlp.s3.amazonaws.com/datasets/glove/glove.6B.100d.txt.gz",
                     "trainable": true
                 }
@@ -31,7 +31,7 @@
       "encoder": {
         "type": "stacked_bidirectional_lstm",
         "input_size": 100,
-        "hidden_size": 400,
+        "hidden_size": 200,
         "num_layers": 3,
         "recurrent_dropout_probability": 0.3,
         "use_highway": true
@@ -54,10 +54,10 @@
       }
     },
     "data_loader": {
-        // See http://docs.allennlp.org/master/api/data/dataloader/ for more info on acceptable
-        // parameters here.
-        "batch_size": 8,
-        "shuffle": true
+      "batch_sampler": {
+        "type": "bucket",
+        "batch_size" : 256
+      }
     },
     "trainer": {
       "num_epochs": 30,

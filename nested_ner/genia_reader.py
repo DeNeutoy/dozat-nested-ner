@@ -73,9 +73,12 @@ class GeniaNestedNerReader(DatasetReader):
             "tokens": [t.text for t in tokens]
         }
 
-        if labeled_spans:
-
-            labels, spans = zip(*labeled_spans)
+        if labeled_spans is not None:
+            if labeled_spans == []:
+                labels = []
+                spans = []
+            else:
+                labels, spans = zip(*labeled_spans)
             adjacency = AdjacencyField(spans, text_field, labels)
             meta["gold"] = labeled_spans
             fields["span_labels"] = adjacency
