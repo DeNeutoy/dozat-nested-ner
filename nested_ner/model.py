@@ -1,4 +1,4 @@
-from typing import Dict, Tuple, Any, List
+from typing import Dict, Tuple, Any, List, NamedTuple
 import logging
 import copy
 
@@ -9,8 +9,15 @@ import numpy
 
 from allennlp.common.checks import check_dimensions_match, ConfigurationError
 from allennlp.data import TextFieldTensors, Vocabulary
-from allennlp.modules import Seq2SeqEncoder, TextFieldEmbedder, Embedding, InputVariationalDropout
-from allennlp.modules.matrix_attention.bilinear_matrix_attention import BilinearMatrixAttention
+from allennlp.modules import (
+    Seq2SeqEncoder,
+    TextFieldEmbedder,
+    Embedding,
+    InputVariationalDropout,
+)
+from allennlp.modules.matrix_attention.bilinear_matrix_attention import (
+    BilinearMatrixAttention,
+)
 from allennlp.modules import FeedForward
 from allennlp.models.model import Model
 from allennlp.nn import InitializerApplicator, Activation
@@ -22,6 +29,15 @@ from allennlp.data.dataset_readers.dataset_utils.span_utils import TypedStringSp
 from nested_ner.per_class_f1 import PerClassScorer
 
 logger = logging.getLogger(__name__)
+
+
+class SpanInformation(NamedTuple):
+
+    start: int
+    end: int
+    tag: str
+    tag_score: float
+    span_score: float
 
 
 @Model.register("dozat_nested_ner")
@@ -51,6 +67,11 @@ class DozatNestedNer(Model):
         The variational dropout applied to the output of the encoder and MLP layers.
     input_dropout : `float`, optional, (default = 0.0)
         The dropout applied to the embedded text input.
+    span_prediction_threshold: str, optional (default = 0.5)
+        The threshold for predicting span boundaries.
+    inference_constraint: str, optional (default = "nested")
+        The type of inference constraint to apply. Can either be "nested" or "flat",
+        depending if spans are allowed to be nested or not.
     initializer : `InitializerApplicator`, optional (default=`InitializerApplicator()`)
         Used to initialize the model parameters.
     """
@@ -67,6 +88,7 @@ class DozatNestedNer(Model):
         dropout: float = 0.0,
         input_dropout: float = 0.0,
         span_prediction_threshold: float = 0.5,
+        inference_constraint: str = "nested",
         initializer: InitializerApplicator = InitializerApplicator(),
         **kwargs,
     ) -> None:
@@ -75,6 +97,11 @@ class DozatNestedNer(Model):
         self.text_field_embedder = text_field_embedder
         self.encoder = encoder
         self.span_prediction_threshold = span_prediction_threshold
+        if inference_constraint not in {"nested", "flat"}:
+            raise ConfigurationError(
+                f"inference_constraint should be either nested or flat but found f{inference_constraint}"
+            )
+        self.inference_constraint = inference_constraint
         encoder_dim = encoder.get_output_dim()
 
         self.head_span_feedforward = span_feedforward or FeedForward(
@@ -157,16 +184,26 @@ class DozatNestedNer(Model):
         encoded_text = self._dropout(encoded_text)
 
         # shape (batch_size, sequence_length, span_representation_dim)
-        head_span_representation = self._dropout(self.head_span_feedforward(encoded_text))
-        child_span_representation = self._dropout(self.child_span_feedforward(encoded_text))
+        head_span_representation = self._dropout(
+            self.head_span_feedforward(encoded_text)
+        )
+        child_span_representation = self._dropout(
+            self.child_span_feedforward(encoded_text)
+        )
 
         # shape (batch_size, sequence_length, tag_representation_dim)
         head_tag_representation = self._dropout(self.head_tag_feedforward(encoded_text))
-        child_tag_representation = self._dropout(self.child_tag_feedforward(encoded_text))
+        child_tag_representation = self._dropout(
+            self.child_tag_feedforward(encoded_text)
+        )
         # shape (batch_size, sequence_length, sequence_length)
-        span_scores = self.span_attention(head_span_representation, child_span_representation)
+        span_scores = self.span_attention(
+            head_span_representation, child_span_representation
+        )
         # shape (batch_size, num_tags, sequence_length, sequence_length)
-        span_tag_logits = self.tag_bilinear(head_tag_representation, child_tag_representation)
+        span_tag_logits = self.tag_bilinear(
+            head_tag_representation, child_tag_representation
+        )
         # Switch to (batch_size, sequence_length, sequence_length, num_tags)
         span_tag_logits = span_tag_logits.permute(0, 2, 3, 1).contiguous()
 
@@ -174,35 +211,44 @@ class DozatNestedNer(Model):
         minus_mask = ~mask * min_value_of_dtype(span_scores.dtype) / 10
         span_scores = span_scores + minus_mask.unsqueeze(2) + minus_mask.unsqueeze(1)
 
-        span_probs, span_tag_probs = self._greedy_decode(span_scores, span_tag_logits, mask)
+        span_probs, span_tag_probs = self._greedy_decode(
+            span_scores, span_tag_logits, mask
+        )
 
-        output_dict = {"span_probs": span_probs, "span_tag_probs": span_tag_probs, "mask": mask}
+        output_dict = {
+            "span_probs": span_probs,
+            "span_tag_probs": span_tag_probs,
+            "mask": mask,
+        }
 
         if metadata:
             output_dict["tokens"] = [meta["tokens"] for meta in metadata]
 
         if span_labels is not None:
             span_nll, tag_nll = self._construct_loss(
-                span_scores=span_scores, span_tag_logits=span_tag_logits, span_tags=span_labels, mask=mask
+                span_scores=span_scores,
+                span_tag_logits=span_tag_logits,
+                span_tags=span_labels,
+                mask=mask,
             )
             output_dict["loss"] = span_nll + tag_nll
             output_dict["span_loss"] = span_nll
             output_dict["tag_loss"] = tag_nll
 
             if not self.training:
-                batch_predicted = self.span_inference(span_probs.cpu().detach().numpy(), span_tag_probs.cpu().detach().numpy(), mask)
+                batch_predicted = self.span_inference(
+                    span_probs.cpu().detach().numpy(),
+                    span_tag_probs.cpu().detach().numpy(),
+                    mask,
+                )
                 # Flatten lists of spans
                 for predicted, meta in zip(batch_predicted, metadata):
                     self._scorer(predicted, meta["gold"])
         return output_dict
 
-
     def span_inference(
-        self,
-        span_probs: torch.Tensor,
-        span_tag_probs: torch.Tensor,
-        mask: torch.Tensor
-        ) -> List[List[TypedStringSpan]]:
+        self, span_probs: torch.Tensor, span_tag_probs: torch.Tensor, mask: torch.Tensor
+    ) -> List[List[TypedStringSpan]]:
 
         lengths = get_lengths_from_binary_sequence_mask(mask)
         batch_spans = []
@@ -217,10 +263,54 @@ class DozatNestedNer(Model):
                 for j in range(i, length):
                     if span_matrix[i, j] == 1:
                         tag = instance_span_tag_probs[i, j].argmax(-1)
+                        tag_score = instance_span_tag_probs[i, j, tag]
+                        span_score = instance_span_probs[i, j]
                         string_tag = self.vocab.get_token_from_index(tag, "labels")
-                        spans.append((string_tag, (i, j)))
+                        spans.append(
+                            SpanInformation(
+                                start=i,
+                                end=j,
+                                tag=string_tag,
+                                tag_score=tag_score,
+                                span_score=span_score,
+                            )
+                        )
+
+            self.apply_span_constraint(spans)
+            spans = [(x.tag, (x.start, x.end)) for x in spans]
+
             batch_spans.append(spans)
         return batch_spans
+
+    def apply_span_constraint(self, spans: List[SpanInformation]):
+        def boundary_clashes(span1: SpanInformation, span2: SpanInformation):
+            if self.inference_constraint == "flat":
+                # Overlaping or nested spans are not allowed.
+                # TODO(Mark): Double check edge case of end of a span index == start of next span index.
+                return (
+                    span2.start < span1.end
+                    and span2.end > span1.start
+                    or span1.start < span2.end
+                    and span1.end > span2.start
+                )
+
+            elif self.inference_constraint == "nested":
+                # Strictly overlaps is not allowed, but nested is fine.
+                return (
+                    span1.start < span2.start < span1.end < span2.end
+                    or span2.start < span1.start < span2.end < span1.end
+                )
+            else:
+                raise ConfigurationError("Invalid inference_constraint.")
+
+        for i, span1 in enumerate(spans):
+            for j, span2 in enumerate(spans):
+
+                if boundary_clashes(span1, span2):
+                    if span1.span_score > span2.span_score:
+                        spans.pop(j)
+                    else:
+                        spans.pop(i)
 
     @overrides
     def make_output_human_readable(
@@ -265,7 +355,11 @@ class DozatNestedNer(Model):
         # Make the span tags not have negative values anywhere
         # (by default, no edge is indicated with -1).
         span_tags = span_tags * span_indices
-        span_nll = self._span_loss(span_scores, span_indices) * mask.unsqueeze(1) * mask.unsqueeze(2)
+        span_nll = (
+            self._span_loss(span_scores, span_indices)
+            * mask.unsqueeze(1)
+            * mask.unsqueeze(2)
+        )
         # We want the mask for the tags to only include the unmasked words
         # and we only care about the loss with respect to the gold spans.
         tag_mask = mask.unsqueeze(1) * mask.unsqueeze(2) * span_indices
@@ -275,7 +369,8 @@ class DozatNestedNer(Model):
         reshaped_logits = span_tag_logits.view(-1, num_tags)
         reshaped_tags = span_tags.view(-1)
         tag_nll = (
-            self._tag_loss(reshaped_logits, reshaped_tags.long()).view(original_shape) * tag_mask
+            self._tag_loss(reshaped_logits, reshaped_tags.long()).view(original_shape)
+            * tag_mask
         )
 
         valid_positions = tag_mask.sum()
@@ -313,10 +408,14 @@ class DozatNestedNer(Model):
         # Mask the lower triangular part of the scores, because we can't have
         # span starts which start after the span ends.
         seq_length = span_scores.shape[-1]
-        inf_lower_tri_mask = torch.triu(span_scores.new_ones(seq_length, seq_length)).log()
+        inf_lower_tri_mask = torch.triu(
+            span_scores.new_ones(seq_length, seq_length)
+        ).log()
         span_scores = span_scores + inf_lower_tri_mask
         # shape (batch_size, sequence_length, sequence_length, num_tags)
-        span_tag_logits = span_tag_logits + inf_lower_tri_mask.unsqueeze(0).unsqueeze(-1)
+        span_tag_logits = span_tag_logits + inf_lower_tri_mask.unsqueeze(0).unsqueeze(
+            -1
+        )
         # Mask padded tokens, because we only want to consider actual word -> word edges.
         minus_mask = ~mask.unsqueeze(2)
         span_scores.masked_fill_(minus_mask, -numpy.inf)

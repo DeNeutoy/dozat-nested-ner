@@ -3,6 +3,7 @@ from collections import defaultdict
 import copy
 from allennlp.data.dataset_readers.dataset_utils.span_utils import TypedStringSpan
 
+
 class PerClassScorer:
     def __init__(self):
         # These will hold per label span counts.
@@ -11,14 +12,12 @@ class PerClassScorer:
         self._false_negatives: Dict[str, int] = defaultdict(int)
 
     def __call__(
-        self,
-        predicted_spans: List[TypedStringSpan],
-        gold_spans: List[TypedStringSpan],
+        self, predicted_spans: List[TypedStringSpan], gold_spans: List[TypedStringSpan],
     ) -> None:
 
         gold_spans = copy.copy(gold_spans)
         predicted_spans = copy.copy(predicted_spans)
-        untyped_gold_spans = { x[1] for x in gold_spans}
+        untyped_gold_spans = {x[1] for x in gold_spans}
         untyped_predicted_spans = {x[1] for x in predicted_spans}
 
         for untyped_span, span in zip(untyped_predicted_spans, predicted_spans):
