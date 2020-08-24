@@ -1,4 +1,5 @@
 from nested_ner.genia_reader import GeniaNestedNerReader
+from nested_ner.genia_v3_reader import GeniaV3NestedNerReader
 
 
 class TestNestedNerReader:
@@ -88,3 +89,12 @@ class TestNestedNerReader:
             ".",
         ]
         assert [t.text for t in fields["tokens"].tokens] == expected_tokens
+
+
+    def test_v3_reader(self):
+        reader = GeniaV3NestedNerReader()
+        data_path = "tests/fixtures/data_v3.txt"
+        instances = reader.read(data_path)
+
+        print(instances[0])
+        print(instances[1])

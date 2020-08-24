@@ -1,0 +1,11 @@
+IL - 2 gene expression and NF - kappa B activation through CD28 requires reactive oxygen production by 5 - lipoxygenase .
+NN NN NN NN NN CC NN NN NN NN NN IN NN VBZ JJ NN NN IN NN NN NN .
+0,4 G#DNA|6,10 G#protein|12,13 G#protein|18,21 G#protein
+
+Activation of the CD28 surface receptor provides a major costimulatory signal for T cell activation resulting in enhanced production of interleukin - 2 ( IL - 2 ) and cell proliferation .
+NN IN DT NN NN NN VBZ DT JJ JJ NN IN NN NN NN VBG IN VBN NN IN NN NN NN ( NN NN NN ) CC NN NN .
+3,4 G#protein|3,6 G#protein|20,23 G#protein|24,27 G#protein
+
+In primary T lymphocytes we show that CD28 ligation leads to the rapid intracellular formation of reactive oxygen intermediates ( ROIs ) which are required for CD28 - mediated activation of the NF - kappa B / CD28 - responsive complex and IL - 2 expression .
+IN JJ NN NNS PRP VBP IN NN NN VBZ TO DT JJ JJ NN IN JJ NN NNS ( NNS ) WDT VBP VBN IN JJ JJ JJ NN IN DT NN NN NN JJ JJ JJ JJ JJ NN CC NN NN NN NN .
+
